@@ -11,6 +11,7 @@ interface IClient {
   lsd: string,
   jazoest: string
   lastSeqID: string
+  clientID: string
 
   userAgent: string
   region: string

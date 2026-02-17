@@ -1,20 +1,21 @@
 import { Transform, TransformCallback } from 'stream';
 import WebSocket from 'ws';
 import Duplexify from 'duplexify';
-import {jar } from '@/clients/cookieJar';
+import { jar } from '@/clients/cookieJar';
 import mqtt from 'mqtt';
 import zlib from 'zlib'
 import logger from '@/utils/log';
+import { MessageParser } from '@/utils/MessageParse';
 
 class MQTTDecoder {
-  public static decodePayload(payload: Buffer): any {
+  public static decodePayload(payload: Buffer): object | null {
     try {
       let data = payload;
       if (payload[0] === 0x78) {
         data = zlib.inflateSync(payload);
       }
-      const jsonString = this.extractJSON(data);
-      if (jsonString) return JSON.parse(jsonString);
+      const jsonObj = this.extractJSON(data);
+      if (jsonObj) return jsonObj;
       return { binaryData: data.toString('hex'), length: data.length };
     } catch (error) {
       console.error("[Decoder] Lỗi khi giải mã gói tin:", error);
@@ -22,14 +23,13 @@ class MQTTDecoder {
     }
   }
 
-  private static extractJSON(buffer: Buffer): string | null {
+  private static extractJSON(buffer: Buffer): object | null {
     const str = buffer.toString('utf-8');
-    const jsonStart = str.indexOf('{');
-    const jsonEnd = str.lastIndexOf('}');
-    if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-      return str.substring(jsonStart, jsonEnd + 1);
+    try {
+      return JSON.parse(str)
+    } catch (error) {
+      return null
     }
-    return null;
   }
 }
 
@@ -40,24 +40,25 @@ interface MqttStream extends NodeJS.ReadWriteStream {
   destroy(err?: Error): void;
 }
 
-let WebSocket_Global: WebSocket | null = null;
-
 /**
  * Xử lý dữ liệu đi từ MQTT Client -> WebSocket
  */
-function buildProxy(): Transform {
+function buildProxy(socket: WebSocket): Transform {
   return new Transform({
     objectMode: false,
     transform(chunk, enc, next) {
-      if (!WebSocket_Global || WebSocket_Global.readyState !== WebSocket.OPEN) {
-        return next();
+      if (socket.readyState === WebSocket.OPEN) {
+        const data = Buffer.isBuffer(chunk)
+          ? chunk
+          : Buffer.from(chunk, 'utf8');
+
+        socket.send(data);
       }
-      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8');
-      WebSocket_Global.send(data);
       next();
     }
   });
 }
+
 
 /**
  * Ghép nối WebSocket và Proxy thành một luồng Duplex cho MQTT
@@ -65,9 +66,12 @@ function buildProxy(): Transform {
 function buildStream(options: any, socket: WebSocket, proxy: Transform): MqttStream {
   const stream = (Duplexify as any)(undefined, undefined, options) as MqttStream;
   stream.socket = socket;
-  WebSocket_Global = socket; // Gán ngay lập tức khi tạo stream
 
-  let pingInterval: NodeJS.Timeout;
+  let pingInterval: NodeJS.Timeout | null = null;
+
+  const cleanup = () => {
+    if (pingInterval) clearInterval(pingInterval);
+  };
 
   socket.onopen = () => {
     stream.setReadable(proxy);
@@ -89,29 +93,27 @@ function buildStream(options: any, socket: WebSocket, proxy: Transform): MqttStr
   };
 
   socket.onclose = () => {
-    clearInterval(pingInterval);
+    cleanup()
     stream.destroy();
   };
 
   socket.onerror = (err) => {
-    clearInterval(pingInterval);
+    cleanup()
     stream.destroy(err as any);
   };
 
   return stream;
 }
 
-export default async function listenMqtt(callback?: (error: any, event: any) => void) {
+export default async function listenMqtt(callback?: (error: Error | null, event: AppEvent) => void) {
   const sessionID = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER) + 1;
   const lastSeqId = client.lastSeqID;
   const GUID = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
     return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
   });
-  console.log(lastSeqId)
 
   const cookies = await jar.getCookieString("https://www.facebook.com");
-  console.log(cookies)
   let host;
   if (client.mqttEndpoint) {
     host = `${client.mqttEndpoint}&sid=${sessionID}&cid=${GUID}`;
@@ -121,7 +123,7 @@ export default async function listenMqtt(callback?: (error: any, event: any) => 
     host = `wss://edge-chat.facebook.com/chat?sid=${sessionID}&cid=${GUID}`;
   }
 
-  console.log(host)
+  logger(`Tiến hành kết nối tới host ${host}...`, 'info')
 
   const username = {
     u: client.userID,
@@ -181,11 +183,12 @@ export default async function listenMqtt(callback?: (error: any, event: any) => 
         'Host': 'edge-chat.facebook.com',
       }
     });
-    return buildStream(options, ws, buildProxy());
+    const proxy = buildProxy(ws)
+    return buildStream(options, ws, proxy);
   }, options);
 
   mqttClient.on('connect', () => {
-    console.log('[MQTT] Kết nối thành công (Chuẩn hrz-gau)');
+    logger(`Đã kết nối tới MQTT thành công!`,'success')
 
     mqttClient.subscribe(['/ls_req', '/ls_resp', '/legacy_web', '/t_ms', '/thread_typing', '/orca_presence', '/notify_disconnect']);
     const queue = {
@@ -202,29 +205,37 @@ export default async function listenMqtt(callback?: (error: any, event: any) => 
     mqttClient.publish("/messenger_sync_create_queue", JSON.stringify(queue), { qos: 1 });
   });
 
-  mqttClient.on('reconnect', () => logger(`Đang thử cố kết nối lại...`,'info'));
-  mqttClient.on('offline', () => logger(`Trạng thái của MQTT đang offline!`,'warn'));
+  mqttClient.on('reconnect', () => logger(`Đang thử cố kết nối lại...`, 'info'));
+  mqttClient.on('offline', () => logger(`Trạng thái của MQTT đang offline!`, 'warn'));
   mqttClient.on('error', (err: any) => {
     console.log(err)
     if (err.code) console.log("[MQTT] Error Code:", err.code);
-    logger(`Đã xảy ra lỗi trong MQTT!`,'error')
+    logger(`Đã xảy ra lỗi trong MQTT!`, 'error')
   });
 
   mqttClient.on('close', () => {
-    logger(`Kết nối tới MQTT đã bị ngắt!`,'error')
+    logger(`Kết nối tới MQTT đã bị ngắt!`, 'error')
   });
 
   mqttClient.on('message', (topic: string, payload: Buffer) => {
-    const decodedData = MQTTDecoder.decodePayload(payload);
+    const decoded = MQTTDecoder.decodePayload(payload);
 
-    if (callback) {
-      callback(null, { topic, data: decodedData });
-    } else {
-      // Debug mặc định nếu không có callback
-      if (topic === '/t_ms' && decodedData) {
-        console.log("[MQTT] Message Received:", JSON.stringify(decodedData, null, 2));
-      }
-    }
+    if (!decoded) return;
+
+    console.dir(decoded, {depth: null})
+
+    const events = MessageParser.parse(topic, decoded);
+
+    events.forEach(event => {
+      // if (event.irisSeqId) {
+      //   client.lastSeqID = event.irisSeqId.toString();
+      //   logger(`Đã cập nhật seqID lại!`, 'success')
+      // }
+
+      console.log(`[EVENT RECEIVED] Type: ${event.type} | `, event);
+
+      if (callback) callback(null, event);
+    });
   })
 
   return mqttClient;
