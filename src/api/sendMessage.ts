@@ -1,5 +1,5 @@
 import { Readable } from "stream";
-import fs, { copySync } from "fs-extra";
+import fs from "fs-extra";
 import { httpClient, jar } from "@/clients/cookieJar";
 import { URLSearchParams } from "url";
 import utils from "@/utils";
@@ -13,11 +13,23 @@ export interface Mention {
   fromIndex?: number;
 }
 
+export interface MessageLocation {
+  latitude: number;
+  longitude: number;
+  current?: boolean;
+}
+
+export type EmojiSize = "small" | "medium" | "large";
+
 export interface MessageContent {
   body?: string;
   attachment?: any | any[];
   sticker?: string | number;
   mentions?: Mention[];
+  url?: string;
+  location?: MessageLocation;
+  emoji?: string;
+  emojiSize?: EmojiSize;
 }
 
 export interface SentMessageInfo {
@@ -52,6 +64,122 @@ function isAudio(p: string) {
 export class MessageSender {
   constructor() { }
 
+  private async getShareAttachmentParams(url: string): Promise<string> {
+    const params = new URLSearchParams();
+    params.append("image_height", "960");
+    params.append("image_width", "960");
+    params.append("uri", url);
+    params.append("__a", "1");
+    params.append("__user", client.userID);
+    if (client.fb_dtsg) {
+      params.append("fb_dtsg", client.fb_dtsg);
+    }
+    if (client.jazoest) {
+      params.append("jazoest", client.jazoest);
+    }
+    if (client.lsd) {
+      params.append("lsd", client.lsd);
+    }
+
+    const response = await httpClient.post(
+      "https://www.facebook.com/message_share_attachment/fromURI/",
+      params.toString(),
+      {
+        jar,
+        responseType: "text",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Referer": "https://www.facebook.com/",
+          "Origin": "https://www.facebook.com",
+          "User-Agent": client.userAgent,
+          "X-Requested-With": "XMLHttpRequest"
+        }
+      }
+    );
+
+    const responseData = this.parseFacebookResponse(response.data);
+    if (responseData?.error) {
+      throw responseData;
+    }
+
+    const shareParams = responseData?.payload?.share_data?.share_params;
+    if (!shareParams) {
+      throw new Error("Invalid url");
+    }
+
+    return shareParams;
+  }
+
+  private applyLocation(message: MessageContent, form: Record<string, any>): void {
+    if (!message.location) {
+      return;
+    }
+
+    if (message.location.latitude == null || message.location.longitude == null) {
+      throw new Error("location property needs both latitude and longitude");
+    }
+
+    form["location_attachment[coordinates][latitude]"] = message.location.latitude;
+    form["location_attachment[coordinates][longitude]"] = message.location.longitude;
+    form["location_attachment[is_current_location]"] = !!message.location.current;
+  }
+
+  private applyEmoji(message: MessageContent, form: Record<string, any>): void {
+    if (message.emojiSize != null && message.emoji == null) {
+      throw new Error("emoji property is empty");
+    }
+
+    if (!message.emoji) {
+      return;
+    }
+
+    const emojiSize = message.emojiSize ?? "medium";
+    if (!["small", "medium", "large"].includes(emojiSize)) {
+      throw new Error("emojiSize property is invalid");
+    }
+
+    if (form["body"]) {
+      throw new Error("body is not empty");
+    }
+
+    form["body"] = message.emoji;
+    form["tags[0]"] = `hot_emoji_size:${emojiSize}`;
+  }
+
+  private async applyUrl(message: MessageContent, form: Record<string, any>): Promise<void> {
+    if (!message.url) {
+      return;
+    }
+
+    form["shareable_attachment[share_type]"] = "100";
+    form["shareable_attachment[share_params]"] = await this.getShareAttachmentParams(message.url);
+  }
+
+  private extractUploadMetadata(metadata: any): any[] {
+    if (Array.isArray(metadata)) {
+      return metadata.filter(Boolean);
+    }
+
+    if (metadata && typeof metadata === "object") {
+      return Object.values(metadata).filter(Boolean);
+    }
+
+    return [];
+  }
+
+  private parseFacebookResponse(data: any): any {
+    if (typeof data !== "string") {
+      return data;
+    }
+
+    const trimmed = data.trim();
+    if (trimmed.startsWith("for (;;);")) {
+      return JSON.parse(trimmed.replace("for (;;);", ""));
+    }
+
+    return JSON.parse(trimmed);
+  }
+
   private async uploadAttachments(attachments: any[]): Promise<any[]> {
     const uploads = []
 
@@ -60,24 +188,60 @@ export class MessageSender {
       if (!stream)
         continue
 
-      const form = {
-        fb_dtsg: client.fb_dtsg,
-        jazoest: client.jazoest,
-        upload_1024: stream,
-        voice_clip: String(isAudio(String((stream as any).path || ""))),
+      const form = new FormData();
+      form.append("__a", "1");
+      form.append("__user", client.userID);
+      if (client.fb_dtsg) {
+        form.append("fb_dtsg", client.fb_dtsg);
       }
+      if (client.jazoest) {
+        form.append("jazoest", client.jazoest);
+      }
+      if (client.lsd) {
+        form.append("lsd", client.lsd);
+      }
+      form.append("upload_1024", stream, {
+        filename: path.basename(String((stream as any).path || "upload.bin")),
+      });
+      form.append("voice_clip", String(isAudio(String((stream as any).path || ""))));
 
       uploads.push(
-        httpClient.postForm(
+        httpClient.post(
           `https://upload.facebook.com/ajax/mercury/upload.php`,
-          form
-        ).then(function (resData) {
-          if (resData.data?.error) throw resData;
-          if (!resData.data?.payload?.metadata?.[0]) {
-            throw { error: "Upload failed: empty metadata" };
+          form,
+          {
+            jar,
+            responseType: "text",
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity,
+            headers: {
+              ...form.getHeaders(),
+              "Accept": "*/*",
+              "Referer": "https://www.facebook.com/",
+              "Origin": "https://www.facebook.com",
+              "User-Agent": client.userAgent,
+              "X-Requested-With": "XMLHttpRequest"
+            }
           }
-          return resData.data.payload.metadata[0];
-        }).catch(error => console.log(error))
+        ).then((response) => {
+          const responseData = this.parseFacebookResponse(response.data);
+
+          if (responseData?.error) {
+            throw responseData;
+          }
+
+          const metadata = this.extractUploadMetadata(responseData?.payload?.metadata);
+          if (!metadata[0]) {
+            throw {
+              error: "Upload failed: empty metadata",
+              response: responseData,
+            };
+          }
+          return metadata[0];
+        }).catch(error => {
+          console.error("[UploadAttachment FAILED]:", error?.response || error?.response?.data || error?.message || error);
+          return null;
+        })
       )
     }
 
@@ -174,7 +338,11 @@ export class MessageSender {
 
       if (replyToMessageID) form["replied_to_message_id"] = replyToMessageID;
 
+      this.applyLocation(message, form);
+
       if (message.sticker) form["sticker_id"] = message.sticker;
+
+      this.applyEmoji(message, form);
 
       if (message.mentions) this.handleMentions(form.body, message.mentions, form);
 
@@ -188,6 +356,8 @@ export class MessageSender {
         });
         form["has_attachment"] = true;
       }
+
+      await this.applyUrl(message, form);
 
       return await this.executeSend(form)
 
@@ -219,14 +389,12 @@ export class MessageSender {
       }
     );
 
-    let rawData = response.data.trim();
-    if (typeof rawData === "string" && rawData.startsWith("for (;;);")) {
-      try {
-        rawData = JSON.parse(rawData.replace("for (;;);", ""));
-      } catch (e) {
-        console.error("Lỗi parse JSON từ Facebook:", e);
-        return null;
-      }
+    let rawData: any;
+    try {
+      rawData = this.parseFacebookResponse(response.data);
+    } catch (e) {
+      console.error("Lỗi parse JSON từ Facebook:", e);
+      return null;
     }
 
     const actions = rawData?.payload?.actions || [];

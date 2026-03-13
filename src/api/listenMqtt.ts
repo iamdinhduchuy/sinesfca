@@ -222,7 +222,7 @@ export default async function listenMqtt(callback?: (error: Error | null, event:
 
     if (!decoded) return;
 
-    console.dir(decoded, {depth: null})
+    // console.dir(decoded, {depth: null})
 
     const events = MessageParser.parse(topic, decoded);
 
@@ -232,7 +232,7 @@ export default async function listenMqtt(callback?: (error: Error | null, event:
       //   logger(`Đã cập nhật seqID lại!`, 'success')
       // }
 
-      console.log(`[EVENT RECEIVED] Type: ${event.type} | `, event);
+      // console.log(`[EVENT RECEIVED] Type: ${event.type} | `, event);
 
       if (callback) callback(null, event);
     });

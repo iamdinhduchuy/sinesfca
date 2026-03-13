@@ -1,14 +1,13 @@
-export enum MessageEventType {
-  MESSAGE = "message",
-  REPLY = "message_reply",
-  UNSEND = "message_unsend",
-  REACTION = "message_reaction",
-  EVENT = "event",
-  READ_RECEIPT = "read_receipt",
-  TYPING = "typing",
-  UNKNOWN = "unknown",
-  PRESENCE = "presence"
-}
+export type MessageEventType =
+  | "message"
+  | "message_reply"
+  | "message_unsend"
+  | "message_reaction"
+  | "event"
+  | "read_receipt"
+  | "typing"
+  | "unknown"
+  | "presence";
 
 interface BaseEvent {
   threadID: string;
@@ -19,7 +18,7 @@ interface BaseEvent {
 }
 
 export interface MessageEvent extends BaseEvent {
-  type: MessageEventType.MESSAGE;
+  type: "message";
   body: string;
   args: string[];
   mentions: Record<string, string>;
@@ -27,7 +26,7 @@ export interface MessageEvent extends BaseEvent {
 }
 
 export interface TypingEvent {
-  type: MessageEventType.TYPING;
+  type: "typing";
   senderID: string;
   threadID: string;
   isTyping: boolean;
@@ -35,7 +34,7 @@ export interface TypingEvent {
 }
 
 export interface ReplyEvent extends Omit<MessageEvent, 'type'> {
-  type: MessageEventType.REPLY;
+  type: "message_reply";
   messageReply: {
     messageID: string;
     senderID: string;
@@ -46,25 +45,25 @@ export interface ReplyEvent extends Omit<MessageEvent, 'type'> {
 }
 
 export interface UnsendEvent extends BaseEvent {
-  type: MessageEventType.UNSEND;
+  type: "message_unsend";
   deletionTimestamp: number;
 }
 
 export interface ReactionEvent extends Omit<BaseEvent, 'isGroup'> {
-  type: MessageEventType.REACTION;
+  type: "message_reaction";
   reaction: string | undefined;
   action: 'ADD' | 'REMOVE';
   userID: string
 }
 
 export interface LogEvent extends BaseEvent {
-  type: MessageEventType.EVENT;
+  type: "event";
   logMessageType: string;
   logMessageData: any;
 }
 
 export interface PresenceEvent {
-  type: MessageEventType.PRESENCE;
+  type: "presence";
   userID: string;
   timestamp: number;
   statuses: {
@@ -166,7 +165,7 @@ export class MessageParser {
       return this.handleReaction(r)
     }
 
-    console.log(delta)
+    // console.log(delta)
 
     // Các trường hợp khác cần xử lí
     return null;
@@ -176,7 +175,7 @@ export class MessageParser {
     const meta = delta.messageMetadata;
     const body = delta.body || "";
     return {
-      type: MessageEventType.MESSAGE,
+      type: "message",
       threadID: (meta.threadKey.threadFbId || meta.threadKey.otherUserFbId).toString(),
       messageID: meta.messageId,
       senderID: meta.actorFbId.toString(),
@@ -196,7 +195,7 @@ export class MessageParser {
 
     return {
       ...base,
-      type: MessageEventType.REPLY,
+      type: "message_reply",
       messageReply: {
         messageID: replied.messageMetadata.messageId,
         senderID: replied.messageMetadata.actorFbId.toString(),
@@ -219,7 +218,7 @@ export class MessageParser {
     if (this.isDuplicate(duplicateKey)) return null;
 
     return {
-      type: MessageEventType.REACTION,
+      type: "message_reaction",
       threadID,
       messageID,
       senderID: userID,
@@ -232,7 +231,7 @@ export class MessageParser {
 
   private static handleUnsend(recallDelta: any): UnsendEvent {
     return {
-      type: MessageEventType.UNSEND,
+      type: "message_unsend",
       threadID: (recallDelta.threadKey.threadFbId || recallDelta.threadKey.otherUserFbId).toString(),
       messageID: recallDelta.messageID,
       senderID: recallDelta.senderID.toString(),
@@ -245,7 +244,7 @@ export class MessageParser {
   private static handlePresence(list: any): PresenceEvent[] {
     return list.map((item: any) => (
       {
-        type: MessageEventType.PRESENCE,
+        type: "presence",
         userID: item.u.toString(),
         timestamp: Date.now(),
         statuses: {
@@ -258,7 +257,7 @@ export class MessageParser {
 
   private static handleTyping(typing: any): TypingEvent {
     return {
-      type: MessageEventType.TYPING,
+      type: "typing",
       senderID: typing.sender_fbid?.toString(),
       threadID: typing.thread?.toString(),
       isTyping: typing.state === 1,

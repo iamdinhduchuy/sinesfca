@@ -4,12 +4,13 @@ import { injectCookies } from "./clients/cookieJar"
 import FacebookUtils from "./utils/FacebookUtils";
 import logger from "./utils/log";
 
+export default async function SinesFCALogin(appState: []): Promise<API>;
 export default async function SinesFCALogin(cookies: string): Promise<API>;
 export default async function SinesFCALogin(username: string, password: string, twoFA?: string): Promise<API>;
 
 
 export default async function SinesFCALogin(
-  arg1: string,
+  arg1: string | [],
   arg2?: string,
   arg3?: string
 ): Promise<API> {
@@ -30,7 +31,7 @@ export default async function SinesFCALogin(
     clientID: (Math.random() * 2147483647 | 0).toString(16)
   };
 
-  if (typeof arg2 === 'undefined') {
+  if (typeof arg2 === 'undefined' && typeof arg3 === 'undefined' && typeof arg1 === 'string') {
     const cookies = arg1;
     await injectCookies(cookies);
 

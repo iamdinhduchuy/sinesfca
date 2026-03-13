@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "tsx --tsconfig tsconfig.json src/run-test.ts"
+    "test": "tsx --tsconfig tsconfig.json src/test/send.ts"
   },
   "author": "",
   "license": "ISC",

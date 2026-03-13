@@ -1,4 +1,4 @@
-import { FacebookEvent, MessageEventType } from "@/utils/MessageParse"
+import { FacebookEvent } from "@/utils/MessageParse"
 import { IAPI } from "./api"
 
 declare global {
